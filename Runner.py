@@ -56,6 +56,7 @@ color_dark_wall = libtcod.Color(0, 0, 50)
 color_light_wall = libtcod.Color(180, 60, 50)
 color_dark_ground = libtcod.Color(20, 20, 85)
 color_light_ground = libtcod.Color(250, 130, 50)
+color_target_ground = libtcod.light_blue #Color(255, 0, 0)
 
 
 class Tile:
@@ -63,6 +64,10 @@ class Tile:
     def __init__(self, blocked, block_sight = None):
         self.blocked = blocked
  
+        #all tiles start untargeted
+        self.targeted = False
+        self.targeted_by = []
+
         #all tiles start unexplored
         self.explored = False
  
@@ -70,6 +75,16 @@ class Tile:
         if block_sight is None: block_sight = blocked
         self.block_sight = block_sight
 
+    def target(self, shooter):
+        self.targeted = True
+        self.targeted_by.append(shooter)
+        fov_recompute = True
+
+    def untarget(self, shooter):
+        self.targeted_by.remove(shooter)
+        if len(self.targeted_by) == 0:
+            self.targeted = False
+            fov_recompute = True
 
 class Rect:
     #a rectangle on the map. used to characterize a room.
@@ -163,6 +178,14 @@ class Object:
         global objects
         objects.remove(self)
         objects.insert(0, self)
+
+    def get_direction(self, other):
+        new_x = self.x - other.x
+        new_y = self.y - other.y
+        distance = math.sqrt(new_x ** 2 + new_y ** 2)
+        dx = int(round(new_x/distance))
+        dy = int(round(new_y/distance))
+        return (dx, dy)
 
 
 class Fighter:
@@ -283,6 +306,250 @@ class ConfusedMonster:
             message ('The ' + self.owner.name + ' is no longer disoriented.', libtcod.lighter_yellow)
 
 
+class GatewayAI:
+    def __init__(self, obj, speed=8, spawn_range=15):
+        self.obj = obj
+        self.speed = speed
+        self.counter = 0
+        self.spawn_range = spawn_range
+
+    #AI for a basic monster.
+    def take_turn(self):
+        gateway = self.owner
+        if gateway.distance_to(player) <= self.spawn_range:
+            #a basic monster's interal clock ticks
+            self.counter += 1
+            if self.counter == self.speed:
+                self.counter = 0
+            else:
+                return
+
+            x = 0
+            y = 0
+            attempt = 0
+            while True:
+                x = gateway.x + libtcod.random_get_int(0, -1, 1)
+                y = gateway.y + libtcod.random_get_int(0, -1, 1)
+                if not is_blocked(x, y):
+                    break
+                else:
+                    attempt += 1
+                    if attempt == 12:
+                        self.counter = self.speed - 2
+                        return
+
+            ObjectFactory.create_object(self.obj, x, y)
+
+
+class GoblinKingAI:
+    def __init__(self, speed=4, sub_ai=None):
+        self.speed = speed
+        self.counter = 0
+        self.enraged = False
+        self.attack_type = 0
+        self.target_tiles = []
+        self.target_coordinates = []
+
+        self.sub_ai = sub_ai
+
+    def take_turn(self):
+        #secondary AI takes a turn
+        if self.sub_ai:
+            self.sub_ai.owner = self.owner
+            self.sub_ai.take_turn()
+
+        #the goblin king's interal clock ticks
+        self.continue_attack()
+        self.counter += 1
+        if (self.enraged and self.counter == self.speed - 1) or self.counter == self.speed:
+            if self.counter == self.speed:
+                self.counter = 0
+            if self.enraged != True and self.owner.fighter.hp < self.owner.fighter.max_hp/2:
+                self.enraged = True
+                self.speed += 1
+                message('the ' + self.owner.name + ' has become enraged!', libtcod.light_red)
+        else:
+            return
+
+        #The goblin king takes his turn. He moves and attacks.
+        monster = self.owner
+        if libtcod.map_is_in_fov(fov_map, monster.x, monster.y):
+            #move towards player if far away
+            if monster.distance_to(player) >= 2:
+                monster.move_towards(player.x, player.y)
+            #attack
+            self.attack()
+
+    def attack(self):
+        monster = self.owner
+
+        if self.attack_type == 0:
+            self.attack_type = libtcod.random_get_int(0, 1, 4)
+
+            #BASIC ATTACK
+            if self.attack_type == 1:
+                if monster.distance_to(player) == 1:
+                    message('The ' + monster.name + ' charges at you!', libtcod.light_blue)
+                    monster.fighter.attack(player)
+                else:
+                    message('The ' + monster.name + ' swings his fist, but you were out of range.', libtcod.light_blue)
+
+            #LINE/ANGLE IN FRONT ATTACK
+            elif self.attack_type == 2:
+                (new_x, new_y) = monster.get_direction(player)
+                x = monster.x - new_x
+                y = monster.y - new_y
+
+                if new_x == 0:
+                    self.target_tiles.append(map[x-1][y])
+                    self.target_tiles.append(map[x][y])
+                    self.target_tiles.append(map[x+1][y])
+                    self.target_coordinates.append((x-1, y))
+                    self.target_coordinates.append((x, y))
+                    self.target_coordinates.append((x+1, y))
+                elif new_y == 0:
+                    self.target_tiles.append(map[x][y-1])
+                    self.target_tiles.append(map[x][y])
+                    self.target_tiles.append(map[x][y+1])
+                    self.target_coordinates.append((x, y-1))
+                    self.target_coordinates.append((x, y))
+                    self.target_coordinates.append((x, y+1))
+                else:
+                    if new_x > 0:
+                        if new_y > 0:
+                            self.target_tiles.append(map[x+1][y])
+                            self.target_tiles.append(map[x][y])
+                            self.target_tiles.append(map[x][y+1])
+                            self.target_coordinates.append((x+1, y))
+                            self.target_coordinates.append((x, y))
+                            self.target_coordinates.append((x, y+1))
+                        else:
+                            self.target_tiles.append(map[x+1][y])
+                            self.target_tiles.append(map[x][y])
+                            self.target_tiles.append(map[x][y-1])
+                            self.target_coordinates.append((x+1, y))
+                            self.target_coordinates.append((x, y))
+                            self.target_coordinates.append((x, y-1))
+                    else:
+                        if new_y > 0:
+                            self.target_tiles.append(map[x-1][y])
+                            self.target_tiles.append(map[x][y])
+                            self.target_tiles.append(map[x][y+1])
+                            self.target_coordinates.append((x-1, y))
+                            self.target_coordinates.append((x, y))
+                            self.target_coordinates.append((x, y+1))
+                        else:
+                            self.target_tiles.append(map[x-1][y])
+                            self.target_tiles.append(map[x][y])
+                            self.target_tiles.append(map[x][y-1])
+                            self.target_coordinates.append((x-1, y))
+                            self.target_coordinates.append((x, y))
+                            self.target_coordinates.append((x, y-1))
+
+                for tile in self.target_tiles:
+                    tile.target(monster)
+                message('The ' + monster.name + ' prepares to swing his hammer!', color_target_ground)
+
+            #STRAIGHT LINE TOWARD PLAYER ATTACK
+            elif self.attack_type == 3:
+                (x, y) = monster.get_direction(player)
+                for i in range(1, 4):
+                    self.target_tiles.append(map[monster.x - x * i][monster.y - y * i])
+
+                for tile in self.target_tiles:
+                    tile.target(monster)
+                message('The ' + monster.name + ' lifts his hammer over his head!', color_target_ground)
+
+            #LINE OVERTOP PLAYER
+            elif self.attack_type == 4:
+                if monster.distance_to(player) <= 4:
+                    x = player.x
+                    y = player.y
+
+                    if libtcod.random_get_int(0, 0, 1) == 1:
+                        self.target_tiles.append(map[x-1][y])
+                        self.target_tiles.append(map[x][y])
+                        self.target_tiles.append(map[x+1][y])
+                        self.target_coordinates.append((x-1, y))
+                        self.target_coordinates.append((x, y))
+                        self.target_coordinates.append((x+1, y))
+                    else:
+                        self.target_tiles.append(map[x][y-1])
+                        self.target_tiles.append(map[x][y])
+                        self.target_tiles.append(map[x][y+1])
+                        self.target_coordinates.append((x, y-1))
+                        self.target_coordinates.append((x, y))
+                        self.target_coordinates.append((x, y+1))
+
+                    for tile in self.target_tiles:
+                        tile.target(monster)
+                    message('The ' + monster.name + ' throws his hammer into the air!', color_target_ground)
+
+    def continue_attack(self):
+        if self.attack_type > 1:
+            flag = False
+            monster = self.owner
+
+            #Untarget tiles
+            for tile in self.target_tiles:
+                tile.untarget(monster)
+
+            for i in range(len(self.target_tiles)):
+                self.target_tiles.pop()
+
+            #Apply damage to player if they're in any of the targeted spaces
+            for (x, y) in self.target_coordinates:
+                if player.x == x and player.y == y:
+                        monster.fighter.attack(player)
+                        flag = True
+            for i in range(len(self.target_coordinates)):
+                self.target_coordinates.pop()
+
+            if not flag:
+                message('The ' + monster.name + ' attacks, but he missed!', libtcod.light_blue)
+
+        self.attack_type = 0
+
+
+class RangedAI:
+    def __init__(self, speed=4, shoot_range=TORCH_RADIUS):
+        self.speed = speed
+        self.counter = 0
+        self.shoot_range = shoot_range
+        self.target_tile = None
+        self.target_x = -1
+        self.target_y = -1
+
+    def take_turn(self):
+        #a ranged monster's interal clock ticks
+        self.counter += 1
+        if self.counter >= self.speed - 1:
+            if self.counter == self.speed:
+                self.counter = 0
+        else:
+            return
+
+        #a ranged monster takes its turn. If you are in range, it will shoot you
+        monster = self.owner
+
+        if player.fighter.hp > 0:
+            if self.counter == self.speed - 1:
+                if self.owner.distance_to(player) <= self.shoot_range:
+                    self.target_x = player.x
+                    self.target_y = player.y
+                    self.target_tile = map[self.target_x][self.target_y]
+                    self.target_tile.target(monster)
+                    message(monster.name + ' takes aim!', color_target_ground)
+            else:
+                if self.target_tile:
+                    self.target_tile.untarget(monster)
+                    self.target_tile = None
+                    if player.x == self.target_x and player.y == self.target_y:
+                        monster.fighter.attack(player)
+                    else:
+                        message('The ' + monster.name + ' missed!', libtcod.light_blue)
+
+
 class Item:
     def __init__(self, use_function=None):
         self.use_function = use_function
@@ -361,6 +628,164 @@ class Equipment:
         message('Dequipped ' + self.owner.name + ' from ' + self.slot + '.', libtcod.light_green)
 
 
+class ObjectFactory:
+    @staticmethod
+    def append_front(obj):
+        objects.append(obj)
+
+    @staticmethod
+    def append_back(obj):
+        objects.append(obj)
+        obj.send_to_back()
+
+    @staticmethod
+    def create_object(obj, x, y):
+        global player
+
+        if obj == 'player':
+            fighter_component = Fighter(hp=30, defense=2, power=5, xp=0, death_function=player_death)
+            player = Object(x, y, '@', 'player', libtcod.white, blocks=True, fighter=fighter_component)
+            ObjectFactory.append_front(player)  #append to objects
+
+    ### MONSTERS ###
+
+        elif obj == 'goblin':
+            fighter_component = Fighter(hp=10, defense=0, power=3, xp=10, death_function=monster_death)
+            ai_component = BasicMonster(speed=2)
+            monster = Object(x, y, 'g', 'goblin', libtcod.dark_red, blocks=True, fighter=fighter_component, ai=ai_component)
+            ObjectFactory.append_front(monster)  #append to objects
+
+        elif obj == 'goblinX2':
+            #Create a goblin
+            ObjectFactory.create_object('goblin', x, y)  #first goblin
+
+            #Create a second globin
+            x2 = 0
+            y2 = 0
+            while True:
+                x2 = libtcod.random_get_int(0, room.x1+1, room.x2-1)
+                y2 = libtcod.random_get_int(0, room.y1+1, room.y2-1)
+                if x2 != x and y2 != y and not is_blocked(x2, y2):
+                    break
+            ObjectFactory.create_object('goblin', x2, y2) #second goblin
+
+        elif obj == 'orc':
+            #create a an orc
+            fighter_component = Fighter(hp=20, defense=0, power=4, xp=20, death_function=monster_death)
+            ai_component = BasicMonster()
+            monster = Object(x, y, 'o', 'orc', libtcod.desaturated_green, blocks=True, fighter=fighter_component, ai=ai_component)
+            ObjectFactory.append_front(monster)  #append to objects
+
+        elif obj == 'troll':
+            #Create a troll
+            fighter_component = Fighter(hp=40, defense=1, power=10, xp=50, death_function=monster_death)
+            ai_component = BasicMonster(speed=4)
+            monster = Object(x, y, 'T', 'troll', libtcod.darker_green, blocks=True, fighter=fighter_component, ai=ai_component)
+            ObjectFactory.append_front(monster)  #append to objects
+
+        elif obj == 'nightmare':
+            #Create a nightmare
+            fighter_component = Fighter(hp=100, defense=10, power=10, xp=1000, death_function=monster_death)
+            ai_component = BasicMonster(speed=1)
+            monster = Object(x, y, 'N', 'nightmare', libtcod.darker_flame, blocks=True, fighter=fighter_component, ai=ai_component)
+            ObjectFactory.append_front(monster)  #append to objects
+
+        elif obj == 'fletchling':
+            #Create a fletchling
+            fighter_component = Fighter(hp=2, defense=5, power=7, xp=0, death_function=monster_death)
+            ai_component = BasicMonster(speed=2)
+            monster = Object(x, y, 'f', 'fletchling', libtcod.dark_flame, blocks = True, fighter=fighter_component, ai=ai_component)
+            ObjectFactory.append_front(monster)  #append to objects
+
+        elif obj == 'fletchling-gateway':
+            fighter_component = Fighter(hp=75, defense=0, power=0, xp=1000, death_function=gateway_death)
+            ai_component = GatewayAI('fletchling')
+            monster = Object(x, y, 'G', 'fletchling gateway', libtcod.dark_flame, blocks = True, fighter=fighter_component, ai=ai_component)
+            ObjectFactory.append_front(monster)  #append to objects
+
+        elif obj == 'goblin-prince':
+            fighter_component = Fighter(hp=200, defense=4, power=12, xp=1500, death_function=monster_death)
+            sub_ai_component = RangedAI(shoot_range=8)
+            ai_component = GoblinKingAI(sub_ai = sub_ai_component)
+            monster = Object(x, y, 'P', 'goblin prince', libtcod.black, blocks = True, fighter=fighter_component, ai=ai_component)
+            ObjectFactory.append_front(monster)  #append to objects
+
+        elif obj == 'archer':
+            fighter_component = Fighter(hp=60, defense=3, power=10, xp=300, death_function=monster_death)
+            ai_component = RangedAI()
+            monster = Object(x, y, 'a', 'archer', libtcod.white, blocks = True, fighter=fighter_component, ai=ai_component)
+
+        elif obj == 'fast-archer':
+            fighter_component = Fighter(hp=100, defense=3, power=10, xp=500, death_function=monster_death)
+            ai_component-RangedAI(speed=2)
+            monster = Object(x, y, 'A', 'elite archer', libtcod.lighter_grey, blocks = True, fighter=fighter_component, ai=ai_component)
+
+    ## BOSSES ###
+        elif obj == 'goblin-king':
+            fighter_component = Fighter(hp=400, defense=4, power=12, xp=5000, death_function=boss_death)
+            sub_ai_component = RangedAI(shoot_range=15)
+            ai_component = GoblinKingAI(sub_ai=sub_ai_component)
+            monster = Object(x, y, 'K', 'Goblin King', libtcod.black, blocks = True, fighter=fighter_component, ai=ai_component)
+            ObjectFactory.append_front(monster)  #append to objects
+
+    ### ITEMS ###
+
+        elif obj == 'heal':
+            item_component = Item(use_function=cast_heal)
+            item = Object(x, y, '!', 'first-aid kit', libtcod.light_chartreuse, item=item_component)
+            ObjectFactory.append_back(item)  #append to objects
+
+        elif obj == 'confuse':
+            #create a confusion spell
+            item_component = Item(use_function=cast_confuse)
+            item = Object(x, y, '#', 'flashbang',libtcod.light_yellow, item=item_component)
+            ObjectFactory.append_back(item)  #append to objects
+
+        elif obj == 'fireball':
+            #create a fireball spell
+            item_component = Item(use_function=cast_fireball)
+            item = Object(x, y, '#', 'cloud of poison',libtcod.light_green, item=item_component)
+            ObjectFactory.append_back(item)  #append to objects
+
+        elif obj == 'lightning':
+            #create a lightning bolt spell
+            item_component = Item(use_function=cast_lightning)
+            item = Object(x, y, '#', 'ray gun', libtcod.light_blue, item=item_component)
+            ObjectFactory.append_back(item)  #append to objects
+
+    ### EQUIPMENT ###
+
+        elif obj == 'petty-sword':
+            #create a sword
+            equipment_component = Equipment(slot='right hand', power_bonus=2)
+            item = Object(x, y, '/', 'rusty pole', libtcod.darkest_orange, equipment=equipment_component)
+            ObjectFactory.append_back(item)  #append to objects
+
+        elif obj == 'petty-shield':
+            #create a shield
+            equipment_component = Equipment(slot='left hand', defense_bonus=2)
+            item = Object(x, y, '+', 'metal plate', libtcod.silver, equipment=equipment_component)
+            ObjectFactory.append_back(item)  #append to objects
+
+        elif obj == 'petty-breastplate':
+            #create a breastplate
+            equipment_component = Equipment(slot='chest', max_hp_bonus=30)
+            item = Object(x, y, '&', 'thick vest', libtcod.sepia, equipment=equipment_component)
+            ObjectFactory.append_back(item)  #append to objects
+
+    ### STAIRS ###
+
+        elif obj == 'stairs':
+            #create stairs
+            stairs = Object(x, y, '<', 'stairs', libtcod.white, always_visible=True)
+            ObjectFactory.append_back(stairs)  #append to objects
+
+        elif obj == 'late-stairs':
+            #create stairs later in the game
+            stairs = Object(x, y, '<', 'stairs', libtcod.white, always_visible=True)
+            ObjectFactory.append_front(stairs)  #append to objects
+
+
 def is_blocked(x, y):
     #first test the map tile
     if map[x][y].blocked:
@@ -410,11 +835,77 @@ def create_v_tunnel(y1, y2, x):
     for y in range(min(y1, y2), max(y1, y2) + 1):
         map[x][y].blocked = False
         map[x][y].block_sight = False
+
+def make_boss_map():
+    global map, objects
+
+    #the list of objects with player in it
+    objects = [player]
+
+    #fill map with "blocked" tiles
+    map = [[ Tile(True)
+        for y in range(MAP_HEIGHT) ]
+            for x in range(MAP_WIDTH) ]
  
+    num_rooms = 0
+    rooms = []
+
+    #entrance room
+    new_room = Rect(MAP_WIDTH/2 - ROOM_MIN_SIZE/2, MAP_HEIGHT - ROOM_MIN_SIZE - 2, ROOM_MIN_SIZE, ROOM_MIN_SIZE)
+    create_room(new_room)
+    (new_x, new_y) = new_room.center()
+    rooms.append(new_room)
+
+    #this is the first room, where the player starts at
+    player.x = new_x
+    player.y = new_y
+    num_rooms += 1
+
+    #This is the main boss room
+    new_room = Rect(MAP_WIDTH/2 - (ROOM_MAX_SIZE + 4)/2, MAP_HEIGHT - ROOM_MIN_SIZE - 8 - ROOM_MAX_SIZE, ROOM_MAX_SIZE + 4, ROOM_MAX_SIZE + 4)
+    create_room(new_room)
+    (new_x, new_y) = new_room.center()
+    (prev_x, prev_y) = rooms[num_rooms-1].center()
+    create_v_tunnel(prev_y, new_y, new_x)
+    rooms.append(new_room)
+
+    ObjectFactory.create_object('goblin-king', new_x, new_y)
+    ObjectFactory.create_object('fletchling-gateway', new_room.x1 + 1, new_room.y1 + 1)
+    ObjectFactory.create_object('fletchling-gateway', new_room.x2 - 1, new_room.y1 + 1)
+    ObjectFactory.create_object('fletchling-gateway', new_room.x1 + 1, new_room.y2 - 1)
+    ObjectFactory.create_object('fletchling-gateway', new_room.x2 - 1, new_room.y2 - 1)
+    num_rooms += 1
+
+    #This is the left side room
+    new_room = Rect(MAP_WIDTH/2 - (ROOM_MAX_SIZE + 4)/2 - 4 - ROOM_MIN_SIZE, MAP_HEIGHT - ROOM_MIN_SIZE - 8 - ROOM_MAX_SIZE/2, ROOM_MIN_SIZE, ROOM_MIN_SIZE)
+    create_room(new_room)
+    (new_x, new_y) = new_room.center()
+    (prev_x, prev_y) = rooms[num_rooms-1].center()
+    create_h_tunnel(prev_x, new_x, new_y)
+    rooms.append(new_room)
+
+    ObjectFactory.create_object('troll', new_x, new_y - 1)
+    ObjectFactory.create_object('troll', new_x - 1, new_y)
+    ObjectFactory.create_object('troll', new_x, new_y + 1)
+    num_rooms += 1
+    
+    #This is the right side room
+    new_room = Rect(MAP_WIDTH/2 + (ROOM_MAX_SIZE + 4)/2 + 4, MAP_HEIGHT - ROOM_MIN_SIZE - 8 - ROOM_MAX_SIZE/2, ROOM_MIN_SIZE, ROOM_MIN_SIZE)
+    create_room(new_room)
+    (new_x, new_y) = new_room.center()
+    (prev_x, prev_y) = rooms[num_rooms-1].center()
+    create_h_tunnel(prev_x, new_x, new_y)
+    rooms.append(new_room)
+
+    ObjectFactory.create_object('troll', new_x, new_y - 1)
+    ObjectFactory.create_object('troll', new_x + 1, new_y)
+    ObjectFactory.create_object('troll', new_x, new_y + 1)
+    num_rooms += 1
+
 def make_map():
     global map, objects, stairs
  
-    #the list of objects with those two
+    #the list of objects with player in it
     objects = [player]
 
     #fill map with "blocked" tiles
@@ -481,9 +972,7 @@ def make_map():
             num_rooms += 1
 
     #create stairs at the center of the Last room
-    stairs = Object(new_x, new_y, '<', 'stairs', libtcod.white, always_visible=True)
-    objects.append(stairs)
-    stairs.send_to_back()  #so it's drawn below the monsters
+    ObjectFactory.create_object('stairs', new_x, new_y)
 
 def place_objects(room):
     #choose random number of monsters
@@ -523,48 +1012,8 @@ def place_objects(room):
             if not is_blocked(x, y):
                 break
         choice = random_choice(monster_chances)
-
-        if choice == 'goblinX2':
-            #Create 2 goblins
-            #Create a goblin
-            fighter_component = Fighter(hp=10, defense=0, power=3, xp=10, death_function=monster_death)
-            ai_component = BasicMonster(speed=2)
-            monster = Object(x, y, 'g', 'goblin', libtcod.dark_red, blocks=True, fighter=fighter_component, ai=ai_component)
-
-            #Create a second globin
-            x2 = 0
-            y2 = 0
-            while True:
-                x2 = libtcod.random_get_int(0, room.x1+1, room.x2-1)
-                y2 = libtcod.random_get_int(0, room.y1+1, room.y2-1)
-                if x2 != x and y2 != y and not is_blocked(x2, y2):
-                    break
-            fighter_component2 = Fighter(hp=10, defense=0, power=3, xp=10, death_function=monster_death)
-            ai_component2 = BasicMonster(speed=2)
-            doub_mon = Object(x2, y2, 'g', 'goblin', libtcod.dark_red, blocks=True, fighter=fighter_component2, ai=ai_component2)
-            objects.append(doub_mon)
-        elif choice == 'orc':
-            #create a an orc
-            fighter_component = Fighter(hp=20, defense=0, power=4, xp=20, death_function=monster_death)
-            ai_component = BasicMonster()
-            monster = Object(x, y, 'o', 'orc', libtcod.desaturated_green, blocks=True, fighter=fighter_component, ai=ai_component)
-        elif choice == 'troll':
-            #Create a troll
-            fighter_component = Fighter(hp=40, defense=1, power=10, xp=50, death_function=monster_death)
-            ai_component = BasicMonster(speed=4)
-            monster = Object(x, y, 'T', 'troll', libtcod.darker_green, blocks=True, fighter=fighter_component, ai=ai_component)
-        elif choice == 'goblin':  #39% chance of getting 1 Goblin
-            #Create a goblin
-            fighter_component = Fighter(hp=10, defense=0, power=3, xp=10, death_function=monster_death)
-            ai_component = BasicMonster(speed=2)
-            monster = Object(x, y, 'g', 'goblin', libtcod.dark_red, blocks=True, fighter=fighter_component, ai=ai_component)
-        elif choice == 'nightmare':  #1% chance of finding a nightmare
-            #Create a nightmare
-            fighter_component = Fighter(hp=100, defense=10, power=10, xp=1000, death_function=monster_death)
-            ai_component = BasicMonster(speed=1)
-            monster = Object(x, y, 'N', 'nightmare', libtcod.darker_flame, blocks=True, fighter=fighter_component, ai=ai_component)
-
-        objects.append(monster)
+        ObjectFactory.create_object(choice, x, y)
+            
 
     #choose random number of items
     num_items = libtcod.random_get_int(0, 0, max_items)
@@ -578,38 +1027,7 @@ def place_objects(room):
                 break;
 
         choice = random_choice(item_chances)
-
-        if choice == 'heal':
-            #create a healing potion
-            item_component = Item(use_function=cast_heal)
-            item = Object(x, y, '!', 'first-aid kit', libtcod.light_chartreuse, item=item_component)
-        elif choice == 'confuse':
-            #create a confusion spell
-            item_component = Item(use_function=cast_confuse)
-            item = Object(x, y, '#', 'flashbang',libtcod.light_yellow, item=item_component)
-        elif choice == 'fireball':
-            #create a fireball spell
-            item_component = Item(use_function=cast_fireball)
-            item = Object(x, y, '#', 'cloud of poison',libtcod.light_green, item=item_component)
-        elif choice == 'lightning':
-            #create a lightning bolt spell
-            item_component = Item(use_function=cast_lightning)
-            item = Object(x, y, '#', 'ray gun', libtcod.light_blue, item=item_component)
-        elif choice == 'petty-sword':
-            #create a sword
-            equipment_component = Equipment(slot='right hand', power_bonus=2)
-            item = Object(x, y, '/', 'rusty pole', libtcod.darkest_orange, equipment=equipment_component)
-        elif choice == 'petty-shield':
-            #create a shield
-            equipment_component = Equipment(slot='left hand', defense_bonus=2)
-            item = Object(x, y, '+', 'metal plate', libtcod.silver, equipment=equipment_component)
-        elif choice == 'petty-breastplate':
-            #create a breastplate
-            equipment_component = Equipment(slot='chest', max_hp_bonus=30)
-            item = Object(x, y, '&', 'thick vest', libtcod.sepia, equipment=equipment_component)
-
-        objects.append(item)
-        item.send_to_back() #items appear below other objects
+        ObjectFactory.create_object(choice, x, y)
 
 def random_choice(chances_dict):
     #choose one option from dictionary of chances, returning its key
@@ -675,6 +1093,8 @@ def render_all():
     global color_dark_ground, color_light_ground
     global fov_recompute
  
+    #just testing
+    fov_recompute = True
     if fov_recompute:
         #recompute FOV if needed (the player moved or something)
         fov_recompute = False
@@ -695,9 +1115,12 @@ def render_all():
                 else:
                     #it's visible
                     if wall:
-                        libtcod.console_set_char_background(con, x, y, color_light_wall, libtcod.BKGND_SET )
+                        libtcod.console_set_char_background(con, x, y, color_light_wall, libtcod.BKGND_SET)
                     else:
-                        libtcod.console_set_char_background(con, x, y, color_light_ground, libtcod.BKGND_SET )
+                        if map[x][y].targeted:
+                            libtcod.console_set_char_background(con, x, y, color_target_ground, libtcod.BKGND_SET )
+                        else:
+                            libtcod.console_set_char_background(con, x, y, color_light_ground, libtcod.BKGND_SET)
                     #since it's visible, explore it
                     map[x][y].explored = True
  
@@ -777,10 +1200,11 @@ def player_move_or_attack(dx, dy):
 def check_level_up():
     #see if the player's experience is enough to level-up
     level_up_xp = LEVEL_UP_BASE + (player.level - 1) * LEVEL_UP_FACTOR
-    if player.fighter.xp >= level_up_xp:
+    while player.fighter.xp >= level_up_xp:
         #it is! Level up
         player.level += 1
         player.fighter.xp -= level_up_xp
+        level_up_xp = LEVEL_UP_BASE + (player.level - 1) * LEVEL_UP_FACTOR
         message("You're making things interesting, Runner! You've become level " + str(player.level) + '.', libtcod.yellow)
 
         choice = None
@@ -975,7 +1399,6 @@ def monster_death(monster):
     #transform it into a nasty corpse! it doesn't block, can't be
     #attacked, and doesn't move
     message(monster.name.capitalize() + ' is dead! You gained ' + str(monster.fighter.xp) + ' experience.', libtcod.dark_orange)
-    check_level_up()
     monster.char = '%'
     monster.color = libtcod.dark_red
     monster.blocks = False
@@ -983,6 +1406,38 @@ def monster_death(monster):
     monster.ai = None
     monster.name = 'remains of ' + monster.name
     monster.send_to_back()
+    check_level_up()
+
+def gateway_death(gateway):
+    #turn the gateway into rubble
+    message('The ' + gateway.name + 'is destroyed! You gained ' + str(gateway.fighter.xp) + ' experience.', libtcod.dark_orange)
+    gateway.char = '%'
+    gateway.color = libtcod.darkest_orange
+    gateway.blocks = False
+    gateway.fighter = None
+    gateway.ai = None
+    gateway.name = 'rubble'
+    gateway.send_to_back()
+    check_level_up()
+
+def boss_death(boss):
+    #turn the boss into a corpse
+    message('You defeated the ' + boss.name + '! Your reward is ' + str(boss.fighter.xp) + ' experience!', libtcod.dark_orange)
+    boss.char = '%'
+    boss.blocks = False
+    boss.fighter = None
+    boss.ai = None
+    boss.name = 'rubble'
+    boss.send_to_back()
+    x = 0
+    y = 0
+    while True:
+        x = libtcod.random_get_int(0, 0, MAP_WIDTH-1)
+        y = libtcod.random_get_int(0, 0, MAP_HEIGHT-1)
+        if not is_blocked(x, y):
+            break
+    ObjectFactory.create_object('late-stairs', x, y)
+    check_level_up()
 
 def target_tile(max_range = None):
     #return the position of a tile Left-clicked and in the player's FOV (optionally in a range),
@@ -1074,13 +1529,14 @@ def cast_fireball():
             obj.fighter.take_damage(FIREBALL_DAMAGE)
 
 def new_game():
-    global player, inventory, game_msgs, game_state, dungeon_level
+    global player, objects, inventory, game_msgs, game_state, dungeon_level
 
     dungeon_level = 1
 
+    objects = []
+
     #create objct representing the player
-    fighter_component = Fighter(hp=30, defense=2, power=5, xp=0, death_function=player_death)
-    player = Object(SCREEN_WIDTH/2, SCREEN_HEIGHT/2, '@', 'player', libtcod.white, blocks=True, fighter=fighter_component)
+    ObjectFactory.create_object('player', SCREEN_WIDTH/2, SCREEN_HEIGHT/2)
     player.level = 1
 
     #generate map (at this point it's not drawn to the screen)
@@ -1144,7 +1600,10 @@ def next_level():
 
     dungeon_level += 1
     message('On to the next trial, Runner #43!', libtcod.dark_violet)
-    make_map()
+    if dungeon_level != 10:
+        make_map()
+    else:
+        make_boss_map()
     initialize_fov()
 
 def main_menu():
@@ -1184,7 +1643,10 @@ def save_game():
     file['inventory'] = inventory
     file['game_msgs'] = game_msgs
     file['game_state'] = game_state
-    file['stairs_index'] = objects.index(stairs)
+    try:
+        file['stairs_index'] = objects.index(stairs)
+    except:
+        file['stairs_index'] = -1
     file['dungeon_level'] = dungeon_level
     file.close()
 
@@ -1199,7 +1661,8 @@ def load_game():
     inventory = file['inventory']
     game_msgs = file['game_msgs']
     game_state = file['game_state']
-    stairs = objects[file['stairs_index']]
+    if file['stairs_index'] != -1:
+        stairs = objects[file['stairs_index']]
     dungeon_level = file['dungeon_level']
     file.close()
 
