@@ -38,7 +38,7 @@ LIGHTNING_DAMAGE = 50
 CONFUSE_DEFAULT_SPEED = 2
 CONFUSE_NUM_TURNS = 2
 CONFUSE_RANGE = 3
-FIREBALL_RADIUS = 3
+FIREBALL_RADIUS = 2
 FIREBALL_DAMAGE = 15
 
 #System values
@@ -663,9 +663,9 @@ class ObjectFactory:
             x2 = 0
             y2 = 0
             while True:
-                x2 = libtcod.random_get_int(0, room.x1+1, room.x2-1)
-                y2 = libtcod.random_get_int(0, room.y1+1, room.y2-1)
-                if x2 != x and y2 != y and not is_blocked(x2, y2):
+                x2 = libtcod.random_get_int(0, x - 1, x + 1)
+                y2 = libtcod.random_get_int(0, y - 1, y + 1)
+                if (x2 != x or y2 != y) and not is_blocked(x2, y2):
                     break
             ObjectFactory.create_object('goblin', x2, y2) #second goblin
 
@@ -704,19 +704,19 @@ class ObjectFactory:
             ObjectFactory.append_front(monster)  #append to objects
 
         elif obj == 'goblin-prince':
-            fighter_component = Fighter(hp=200, defense=4, power=12, xp=1500, death_function=monster_death)
+            fighter_component = Fighter(hp=200, defense=3, power=10, xp=1500, death_function=monster_death)
             sub_ai_component = RangedAI(shoot_range=8)
             ai_component = GoblinKingAI(sub_ai = sub_ai_component)
             monster = Object(x, y, 'P', 'goblin prince', libtcod.black, blocks = True, fighter=fighter_component, ai=ai_component)
             ObjectFactory.append_front(monster)  #append to objects
 
         elif obj == 'archer':
-            fighter_component = Fighter(hp=60, defense=3, power=10, xp=300, death_function=monster_death)
+            fighter_component = Fighter(hp=60, defense=2, power=10, xp=300, death_function=monster_death)
             ai_component = RangedAI()
             monster = Object(x, y, 'a', 'archer', libtcod.white, blocks = True, fighter=fighter_component, ai=ai_component)
 
         elif obj == 'fast-archer':
-            fighter_component = Fighter(hp=100, defense=3, power=10, xp=500, death_function=monster_death)
+            fighter_component = Fighter(hp=100, defense=2, power=10, xp=500, death_function=monster_death)
             ai_component-RangedAI(speed=2)
             monster = Object(x, y, 'A', 'elite archer', libtcod.lighter_grey, blocks = True, fighter=fighter_component, ai=ai_component)
 
@@ -776,11 +776,13 @@ class ObjectFactory:
     ### STAIRS ###
 
         elif obj == 'stairs':
+            global stairs
             #create stairs
             stairs = Object(x, y, '<', 'stairs', libtcod.white, always_visible=True)
             ObjectFactory.append_back(stairs)  #append to objects
 
         elif obj == 'late-stairs':
+            global stairs
             #create stairs later in the game
             stairs = Object(x, y, '<', 'stairs', libtcod.white, always_visible=True)
             ObjectFactory.append_front(stairs)  #append to objects
@@ -1427,7 +1429,7 @@ def boss_death(boss):
     boss.blocks = False
     boss.fighter = None
     boss.ai = None
-    boss.name = 'rubble'
+    boss.name = 'remnants of ' + boss.name
     boss.send_to_back()
     x = 0
     y = 0
@@ -1518,7 +1520,7 @@ def cast_confuse():
 def cast_fireball():
     #Gotta lob them fireballs!
     #ask the player for a target tile to throw a fireball at
-    message('Left-clock a target tile for the fireball, or right-click to cancel.', libtcod.lighter_green)
+    message('Left-clock a target tile for the poison vial, or right-click to cancel.', libtcod.lighter_green)
     (x, y) = target_tile()
     if x is None: return 'cancelled'
     message('The noxious cloud rapidly expands ' + str(FIREBALL_RADIUS) + ' tiles from where you threw the vial.', libtcod.lighter_green)
@@ -1538,6 +1540,13 @@ def new_game():
     #create objct representing the player
     ObjectFactory.create_object('player', SCREEN_WIDTH/2, SCREEN_HEIGHT/2)
     player.level = 1
+
+    ### TEST BOSS CODE ###
+    #player.fighter.base_max_hp = 4000
+    #player.fighter.hp = 4000
+    #player.fighter.base_power = 10
+    #make_boss_map()
+    ######################
 
     #generate map (at this point it's not drawn to the screen)
     make_map()
