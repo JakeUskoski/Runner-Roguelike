@@ -1,4 +1,4 @@
-import tcod as libtcod
+import libtcodpy as libtcod
 import math
 import textwrap
 import shelve
